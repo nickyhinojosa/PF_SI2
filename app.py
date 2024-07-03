@@ -9,8 +9,12 @@ import threading
 import folium
 from streamlit_folium import folium_static
 from folium.plugins import MarkerCluster
+from streamlit_option_menu import option_menu
+import plotly.express as px
+from streamlit_folium import folium_static
+import folium
 
-# Función para cargar datos con manejo de diferentes delimitadores
+# Function to load data with handling different delimiters
 def cargar_datos():
     archivos = {        
         'aeropuertos': 'aeropuertos_detalle.csv',
@@ -26,84 +30,102 @@ def cargar_datos():
     for key, filename in archivos.items():
         full_path = os.path.join(base_path, filename)
         try:
-            datos[key] = pd.read_csv(full_path, delimiter=';')
+            df = pd.read_csv(full_path, delimiter=';', dayfirst=True)
+            df.columns = df.columns.str.strip()  # Remove extra spaces in column names
+            df.columns = [col.replace(' ', '_') for col in df.columns]  # Replace spaces with underscores
+            datos[key] = df
         except Exception as e:
             st.error(f"Error al cargar {filename}: {str(e)}")
-            datos[key] = pd.DataFrame()  # Usa un DataFrame vacío en caso de error
+            datos[key] = pd.DataFrame()  # Use an empty DataFrame in case of error
     return datos
+def analizar_por_aerolinea(datos):
+    st.header("✈️ Análisis por Aerolínea")
+    
+    # Airline selection
+    aerolineas = datos['2024']['Aerolinea_Nombre'].unique().tolist()
+    aerolineas.insert(0, "Todas")
+    aerolinea_seleccionada = st.multiselect("Selecciona una o más Aerolíneas", aerolineas, default="Todas")
+    
+    # Filter data by selected airlines
+    if "Todas" in aerolinea_seleccionada:
+        datos_aerolinea = datos['2024']
+    else:
+        datos_aerolinea = datos['2024'][datos['2024']['Aerolinea_Nombre'].isin(aerolinea_seleccionada)]
 
-# Función para agregar una pequeña animación de carga
-def load_animation():
-    with st.spinner('Cargando...'):
-        time.sleep(2)
-
-# Función para mostrar el tiempo en un formato visualmente atractivo
-def current_time():
-    return datetime.now(pytz.timezone('America/La_Paz')).strftime('%Y-%m-%d %H:%M:%S')
-
-# Función para actualizar la fecha y hora cada minuto
-def update_datetime(placeholder):
-    while True:
-        now = current_time()
-        placeholder.markdown(f"<p style='text-align: center; color: #FF5722; font-size:24px;'>{now}</p>", unsafe_allow_html=True)
-        time.sleep(60)  # Actualizar cada 60 segundos
-
-# Llamar a la animación de carga
-load_animation()
-def limpiar_valores_nan(texto):
-    return texto if pd.notna(texto) else ""
-# Función para verificar credenciales de inicio de sesión
-def verificar_credenciales(usuario, contraseña):
-    # Aquí puedes añadir lógica para verificar usuario y contraseña
-    # Por ahora, asumimos un usuario y contraseña fijos
-    return usuario == "admin" and contraseña == "password"
-
-# Función principal de la aplicación
-def main():
-    # Estado de la sesión de inicio de sesión
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-
-    # Formulario de inicio de sesión
-    if not st.session_state.logged_in:
-        st.title("Inicio de Sesión")
-        usuario = st.text_input("Usuario")
-        contraseña = st.text_input("Contraseña", type="password")
-        if st.button("Iniciar Sesión"):
-            if verificar_credenciales(usuario, contraseña):
-                st.session_state.logged_in = True
-                st.success("Inicio de sesión exitoso")
-            else:
-                st.error("Usuario o contraseña incorrectos")
+    # Ensure 'Fecha UTC' column exists
+    if 'Fecha_UTC' not in datos_aerolinea.columns:
+        st.error("La columna 'Fecha UTC' no está disponible en los datos.")
         return
 
-    # Cargar los datos
-    datos = cargar_datos()
+    # KPIs
+    st.subheader("📊 KPIs")
+    total_vuelos = len(datos_aerolinea)
+    total_pasajeros = datos_aerolinea['Pasajeros'].sum()
+    promedio_pasajeros = datos_aerolinea['Pasajeros'].mean()
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total de Vuelos", total_vuelos)
+    col2.metric("Total de Pasajeros", total_pasajeros)
+    col3.metric("Promedio de Pasajeros por Vuelo", round(promedio_pasajeros, 2))
 
-    # Configuración del menú de navegación
+    # Line chart for flights per month
+    st.subheader("📅 Vuelos por Mes")
+    datos_aerolinea['Fecha_UTC'] = pd.to_datetime(datos_aerolinea['Fecha_UTC'], dayfirst=True)
+    datos_aerolinea['Mes'] = datos_aerolinea['Fecha_UTC'].dt.to_period('M').astype(str)
+    vuelos_por_mes = datos_aerolinea.groupby('Mes').size().reset_index(name='Vuelos')
+    fig_vuelos_mes = px.line(vuelos_por_mes, x='Mes', y='Vuelos', title=f"Vuelos por Mes para {', '.join(aerolinea_seleccionada)}", markers=True)
+    st.plotly_chart(fig_vuelos_mes)
+
+    # Bar chart for passengers per flight
+    st.subheader("🧍‍♂️ Pasajeros por Vuelo")
+    fig_pasajeros_vuelo = px.bar(datos_aerolinea, x='Fecha_UTC', y='Pasajeros', title=f"Pasajeros por Vuelo para {', '.join(aerolinea_seleccionada)}", color='Pasajeros')
+    st.plotly_chart(fig_pasajeros_vuelo)
+    
+    # Interactive map showing flight routes
+    st.subheader("🗺️ Mapa de Rutas de Vuelo")
+    aeropuertos = datos['aeropuertos']
+    m = folium.Map(location=[-34.6037, -58.3816], zoom_start=5)
+    for index, row in datos_aerolinea.iterrows():
+        origen = aeropuertos[aeropuertos['Aeropuerto'] == row['Origen_/_Destino']]
+        destino = aeropuertos[aeropuertos['Aeropuerto'] == row['Aeropuerto']]
+        if not origen.empty and not destino.empty:
+            folium.PolyLine([(origen['latitud'].values[0], origen['longitud'].values[0]),
+                             (destino['latitud'].values[0], destino['longitud'].values[0])],
+                            color="blue", weight=2.5, opacity=1).add_to(m)
+    folium_static(m)
+
+    # Detailed flight table
+    st.subheader("📋 Tabla Detallada de Vuelos")
+    st.dataframe(datos_aerolinea)
+
+# Main application function
+def main():
+    # Load the data
+    datos = cargar_datos()
+    
+    all_years_data = pd.concat([datos[year] for year in ['2019', '2020', '2021', '2022', '2023', '2024']], ignore_index=True)
+    all_years_data['Fecha_UTC'] = pd.to_datetime(all_years_data['Fecha_UTC'], dayfirst=True)
+    all_years_data['PAX'] = pd.to_numeric(all_years_data['PAX'], errors='coerce')
+    filtered_data = all_years_data[all_years_data['Fecha_UTC'] >= '2019-01-01']
+    # Navigation menu configuration
     with st.sidebar:
         selection = option_menu(
             "Navegación",
-            ["Introducción", "Consolidado de Datos", "Análisis Temporal", "Análisis por Aeropuerto",
-             "Análisis por Aerolínea", "Análisis de Pasajeros", "Análisis de Tipo de Movimiento",
-             "Mapas Interactivos", "Conclusiones", "Acerca de"],
-            icons=["house", "file-earmark-text", "clock", "building",
+             ["Introducción", "General", "Análisis por año", "Análisis por aerolinea",
+             "Análisis de Pasajeros","Mapas Interactivos", "Calidad de pasajeros"],
+            icons=["house", "file-earmark-text", "clock", 
                    "airplane", "people", "clipboard", "map", "check-circle", "info-circle"],
             menu_icon="cast",
             default_index=0,
         )
+        # Botón para cerrar sesión
 
-    # Página: Introducción
-    # Página: Introducción
+   
+    # Page: Introduction
     if selection == "Introducción":
-        # Título y subtítulo con estilos CSS
+                 # Título y subtítulo con estilos CSS
         st.markdown("<h1 style='text-align: center; color: #4CAF50;'>Dashboard de Análisis de Vuelos ✈️</h1>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align: center; color: #9E9E9E;'>Introducción al propósito del dashboard y la importancia de los datos analizados.</h3>", unsafe_allow_html=True)
-
-        # Fecha y Hora Actual con animación
-        st.write("## 📅 Fecha y Hora Actual")
-        placeholder = st.empty()
-        threading.Thread(target=update_datetime, args=(placeholder,), daemon=True).start()
 
         # Resumen de Datos por Dataset en cuadros bonitos
         st.write("## 📊 Resumen de Datos por Dataset")
@@ -182,17 +204,216 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
-    # Página: Consolidado de Datos
-    elif selection == "Consolidado de Datos":
+    # Page: General
+    elif selection == "General":
+    # Consolidate data for all years
+        # General page layout
         st.title("Consolidado de Datos")
         st.write("En esta página se muestra el conjunto de datos consolidado.")
-        df_consolidado = pd.concat(datos.values())
-        st.dataframe(df_consolidado)
-        # Añadir filtros según sea necesario
+
+        # KPI Section
+        total_vuelos = all_years_data['Fecha_UTC'].count()
+        total_pasajeros = all_years_data['PAX'].sum()
+        promedio_pasajeros = all_years_data['PAX'].mean()
+        num_aeropuertos = datos['aeropuertos']['local'].nunique()
+
+        # Define CSS styles
+        st.markdown("""
+            <style>
+            .metric-container {
+                background-color: #2B2B2B;
+                padding: 15px;
+                border-radius: 10px;
+                box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.3);
+                text-align: center;
+                margin-bottom: 15px;
+            }
+            .metric-label {
+                font-size: 14px;
+                font-weight: bold;
+                color: #FFFFFF;
+            }
+            .metric-value {
+                font-size: 20px;
+                font-weight: bold;
+                color: #1E90FF;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+
+        st.subheader("Indicadores Clave de Desempeño (KPIs)")
+        col1, col2, col3, col4 = st.columns(4, gap="medium")
+
+        # Add metrics with style
+        with col1:
+            st.markdown(f"""
+                <div class="metric-container">
+                    <div class="metric-label">✈️ Total de Vuelos</div>
+                    <div class="metric-value">{total_vuelos}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        with col2:
+            st.markdown(f"""
+                <div class="metric-container">
+                    <div class="metric-label"> Total de Pasajeros</div>
+                    <div class="metric-value">{total_pasajeros}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        with col3:
+            st.markdown(f"""
+                <div class="metric-container">
+                    <div class="metric-label"> Promedio de Pasajeros por Vuelo</div>
+                    <div class="metric-value">{round(promedio_pasajeros, 2)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        with col4:
+            st.markdown(f"""
+                <div class="metric-container">
+                    <div class="metric-label"> Número de Aeropuertos</div>
+                    <div class="metric-value">{num_aeropuertos}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        # Main Charts Section
+        st.subheader("Gráficos Principales")
+
+        # Line chart for flights per month
+        all_years_data['Mes'] = all_years_data['Fecha_UTC'].dt.to_period('M')
+        vuelos_por_mes = all_years_data.groupby('Mes').size()
+        vuelos_por_mes.index = vuelos_por_mes.index.astype(str)
+        fig_line = px.line(vuelos_por_mes, title="Vuelos por Mes", labels={'index': 'Mes', 'value': 'Número de Vuelos'})
+        fig_line.update_layout(plot_bgcolor='#2B2B2B', paper_bgcolor='#2B2B2B', font_color='#FFFFFF', xaxis_title='Mes', yaxis_title='Número de Vuelos')
+        fig_line.update_traces(line=dict(color='#1E90FF'))
+        st.plotly_chart(fig_line, use_container_width=True)
+
+        # Bar chart for flights by airline
+        vuelos_por_aerolinea = all_years_data['Aerolinea_Nombre'].value_counts().reset_index()
+        vuelos_por_aerolinea.columns = ['Aerolinea', 'Vuelos']
+        fig_bar_vuelos = px.bar(vuelos_por_aerolinea, x='Aerolinea', y='Vuelos', title="Vuelos por Aerolínea", labels={'Aerolinea': 'Aerolínea', 'Vuelos': 'Número de Vuelos'})
+        fig_bar_vuelos.update_layout(xaxis={'categoryorder': 'total descending'}, plot_bgcolor='#2B2B2B', paper_bgcolor='#2B2B2B', font_color='#FFFFFF', xaxis_title='Aerolínea', yaxis_title='Número de Vuelos')
+        fig_bar_vuelos.update_traces(marker_color='#1E90FF')
+        fig_bar_vuelos.update_layout(barmode='stack', bargap=0.2)
+        st.plotly_chart(fig_bar_vuelos, use_container_width=True)
+
+        # Stacked bar chart for passengers by airline
+        pasajeros_por_aerolinea = all_years_data.groupby(['Aerolinea_Nombre', 'Tipo_de_Movimiento'])['PAX'].sum().reset_index()
+        fig_bar_pasajeros = px.bar(pasajeros_por_aerolinea, x='Aerolinea_Nombre', y='PAX', color='Tipo_de_Movimiento', title="Pasajeros por Aerolínea y Tipo de Movimiento", labels={'Aerolinea_Nombre': 'Aerolínea', 'PAX': 'Número de Pasajeros'})
+        fig_bar_pasajeros.update_layout(xaxis={'categoryorder': 'total descending'}, plot_bgcolor='#2B2B2B', paper_bgcolor='#2B2B2B', font_color='#FFFFFF', xaxis_title='Aerolínea', yaxis_title='Número de Pasajeros')
+        fig_bar_pasajeros.update_layout(barmode='stack', bargap=0.2)
+        st.plotly_chart(fig_bar_pasajeros, use_container_width=True)
+
+        # Doughnut chart for distribution of movement type
+        tipo_movimiento = all_years_data['Tipo_de_Movimiento'].value_counts().reset_index()
+        tipo_movimiento.columns = ['Tipo_de_Movimiento', 'count']
+        fig_doughnut = px.pie(tipo_movimiento, values='count', names='Tipo_de_Movimiento', title="Distribución de Tipo de Movimiento", hole=0.3)
+        fig_doughnut.update_layout(plot_bgcolor='#2B2B2B', paper_bgcolor='#2B2B2B', font_color='#FFFFFF')
+        fig_doughnut.update_traces(marker=dict(colors=['#FF6384', '#36A2EB', '#FFCE56']))
+        st.plotly_chart(fig_doughnut, use_container_width=True)
+
+        # Filters Section
+        st.subheader("Filtros")
+        fecha_min = all_years_data['Fecha_UTC'].min().date()
+        fecha_max = all_years_data['Fecha_UTC'].max().date()
+        fecha = st.date_input("Seleccionar rango de fechas", value=[fecha_min, fecha_max], min_value=fecha_min, max_value=fecha_max)
+
+        aeropuertos = ['Todos'] + list(all_years_data['Aeropuerto'].unique())
+        aerolineas = ['Todos'] + list(all_years_data['Aerolinea_Nombre'].unique())
+        tipos_movimiento = ['Todos'] + list(all_years_data['Tipo_de_Movimiento'].unique())
+
+        aeropuerto = st.selectbox("Seleccionar Aeropuerto (Origen/Destino)", aeropuertos)
+        aerolinea = st.selectbox("Seleccionar Aerolínea", aerolineas)
+        tipo_movimiento = st.selectbox("Seleccionar Tipo de Movimiento", tipos_movimiento)
+
+        # Filter data
+        datos_filtrados = all_years_data[
+            (all_years_data['Fecha_UTC'] >= pd.to_datetime(fecha[0])) & 
+            (all_years_data['Fecha_UTC'] <= pd.to_datetime(fecha[1]))
+        ]
+
+        if aeropuerto != 'Todos':
+            datos_filtrados = datos_filtrados[datos_filtrados['Aeropuerto'] == aeropuerto]
+
+        if aerolinea != 'Todos':
+            datos_filtrados = datos_filtrados[datos_filtrados['Aerolinea_Nombre'] == aerolinea]
+
+        if tipo_movimiento != 'Todos':
+            datos_filtrados = datos_filtrados[datos_filtrados['Tipo_de_Movimiento'] == tipo_movimiento]
+
+        # Detailed Table
+        st.subheader("Tabla Detallada")
+        st.dataframe(datos_filtrados)
+# Página: Consolidado de Datos
+    elif selection == "Análisis por año":
+        st.title("Análisis por Año")
+
+        # Year selection
+        year = st.selectbox("Seleccionar Año", ["2019", "2020", "2021", "2022", "2023", "2024"])
+
+        # Load the data for the selected year
+        df_year = datos[year]
+
+        if not df_year.empty:
+            # KPIs
+            total_vuelos = df_year.shape[0]
+            total_pasajeros = df_year['Pasajeros'].sum()
+
+            # Handle missing columns gracefully
+            if 'Tipo_de_Movimiento' in df_year.columns:
+                total_aterrizajes = df_year[df_year['Tipo_de_Movimiento'] == 'Aterrizaje'].shape[0]
+                total_despegues = df_year[df_year['Tipo_de_Movimiento'] == 'Despegue'].shape[0]
+            else:
+                total_aterrizajes = 0
+                total_despegues = 0
+
+            st.metric("Total Vuelos", total_vuelos)
+            st.metric("Total Pasajeros", total_pasajeros)
+            st.metric("Total Aterrizajes", total_aterrizajes)
+            st.metric("Total Despegues", total_despegues)
+
+            # Line chart for flights by month
+            if 'Fecha' in df_year.columns:
+                df_year['Mes'] = pd.to_datetime(df_year['Fecha'], errors='coerce').dt.month
+                vuelos_por_mes = df_year.groupby('Mes').size().reset_index(name='Vuelos')
+                fig_line = px.line(vuelos_por_mes, x='Mes', y='Vuelos', title="Vuelos por Mes en el Año Seleccionado")
+                st.plotly_chart(fig_line)
+
+            # Bar chart for flights by airline
+            if 'Aerolínea_Nombre' in df_year.columns:
+                vuelos_por_aerolinea = df_year['Aerolínea_Nombre'].value_counts().reset_index()
+                vuelos_por_aerolinea.columns = ['Aerolínea', 'Vuelos']
+                fig_bar = px.bar(vuelos_por_aerolinea, x='Aerolínea', y='Vuelos', title="Vuelos por Aerolínea en el Año Seleccionado")
+                st.plotly_chart(fig_bar)
+
+            # Detailed table
+            st.dataframe(df_year)
+
+            # Filters
+            if 'Aerolínea_Nombre' in df_year.columns:
+                aerolinea_filter = st.multiselect("Filtrar por Aerolínea", options=df_year['Aerolínea_Nombre'].unique())
+            else:
+                aerolinea_filter = []
+
+            if 'Aeropuerto' in df_year.columns:
+                aeropuerto_filter = st.multiselect("Filtrar por Aeropuerto", options=df_year['Aeropuerto'].unique())
+            else:
+                aeropuerto_filter = []
+
+            if aerolinea_filter:
+                df_year = df_year[df_year['Aerolínea_Nombre'].isin(aerolinea_filter)]
+            if aeropuerto_filter:
+                df_year = df_year[df_year['Aeropuerto'].isin(aeropuerto_filter)]
+
+            st.dataframe(df_year)
+
+        else:
+            st.warning("No hay datos disponibles para el año seleccionado.")
 
     # Página: Análisis Temporal
-    elif selection == "Análisis Temporal":
-        st.title("Análisis Temporal")
+    elif selection == "Análisis por aerolinea":
+        analizar_por_aerolinea(datos)
         # Crear gráficos y añadir filtros según sea necesario
 
     # Página: Análisis por Aeropuerto
