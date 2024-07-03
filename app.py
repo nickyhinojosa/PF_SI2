@@ -332,6 +332,8 @@ def main():
         # Detailed Table
         st.subheader("Tabla Detallada")
         st.dataframe(datos_filtrados)
+
+        
 # Página: Consolidado de Datos
     elif selection == "Análisis por año":
         st.title("Análisis por Año")
